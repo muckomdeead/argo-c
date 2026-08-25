@@ -45,7 +45,7 @@ type Webhook struct {
 // GitHubClient defines the client contract for GitHub webhook operations.
 type GitHubClient interface {
 	GetWebhook(ctx context.Context, owner, repo string, hookID int64) (*Webhook, error)
-	ListWebhooks(ctx context.Context, owner, repo string) ([]*Webhook, error)
+	ListWebhooks(ctx context.Context, owner, repo string)
 	CreateWebhook(ctx context.Context, owner, repo string, hook *Webhook) (*Webhook, error)
 }
 
