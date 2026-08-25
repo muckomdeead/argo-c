@@ -82,21 +82,21 @@ func TestReconciler_ServerError_HaltsWithoutCreation(t *testing.T) {
 			client := NewHTTPGitHubClient(server.URL, "test-token", server.Client())
 			reconciler := NewReconciler(client, nil)
 
-		desired := &Webhook{
-			Active: true,
-			Config: WebhookConfig{URL: "https://example.com/hook"},
-		}
+			desired := &Webhook{
+				Active: true,
+				Config: WebhookConfig{URL: "https://example.com/hook"},
+			}
 
-		_, err := reconciler.Reconcile(context.Background(), "owner", "repo", desired)
-		if err == nil {
-			t.Fatalf("expected error for status %d, got nil", tc.statusCode)
-		}
-		if !errors.Is(err, ErrServerError) {
-			t.Fatalf("expected ErrServerError, got: %v", err)
-		}
-		if atomic.LoadInt32(&createCalled) != 0 {
-			t.Fatalf("CreateWebhook should NOT be called on server error %d", tc.statusCode)
-		}
+			_, err := reconciler.Reconcile(context.Background(), "owner", "repo", desired)
+			if err == nil {
+				t.Fatalf("expected error for status %d, got nil", tc.statusCode)
+			}
+			if !errors.Is(err, ErrServerError) {
+				t.Fatalf("expected ErrServerError, got: %v", err)
+			}
+			if atomic.LoadInt32(&createCalled) != 0 {
+				t.Fatalf("CreateWebhook should NOT be called on server error %d", tc.statusCode)
+			}
 		})
 	}
 }
@@ -169,21 +169,21 @@ func TestReconciler_AuthErrors_HaltsWithoutCreation(t *testing.T) {
 			client := NewHTTPGitHubClient(server.URL, "invalid-token", server.Client())
 			reconciler := NewReconciler(client, nil)
 
-		desired := &Webhook{
-			Active: true,
-			Config: WebhookConfig{URL: "https://example.com/hook"},
-		}
+			desired := &Webhook{
+				Active: true,
+				Config: WebhookConfig{URL: "https://example.com/hook"},
+			}
 
-		_, err := reconciler.Reconcile(context.Background(), "owner", "repo", desired)
-		if err == nil {
-			t.Fatalf("expected auth error for %s, got nil", tc.name)
-		}
-		if !errors.Is(err, tc.expectedErr) {
-			t.Fatalf("expected %v, got: %v", tc.expectedErr, err)
-		}
-		if atomic.LoadInt32(&createCalled) != 0 {
-			t.Fatalf("CreateWebhook should NOT be called on auth error %d", tc.statusCode)
-		}
+			_, err := reconciler.Reconcile(context.Background(), "owner", "repo", desired)
+			if err == nil {
+				t.Fatalf("expected auth error for %s, got nil", tc.name)
+			}
+			if !errors.Is(err, tc.expectedErr) {
+				t.Fatalf("expected %v, got: %v", tc.expectedErr, err)
+			}
+			if atomic.LoadInt32(&createCalled) != 0 {
+				t.Fatalf("CreateWebhook should NOT be called on auth error %d", tc.statusCode)
+			}
 		})
 	}
 }
