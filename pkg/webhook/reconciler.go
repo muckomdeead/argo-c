@@ -2,6 +2,7 @@ package webhook
 
 import (
 	"bytes"
+	"net"
 	"context"
 	"encoding/json"
 	"errors"
@@ -10,6 +11,7 @@ import (
 	"log"
 	"net/http"
 	"strings"
+	"time"
 )
 
 var (
@@ -23,6 +25,15 @@ var (
 	ErrRateLimited = errors.New("github api rate limited")
 	// ErrServerError indicates a GitHub server-side failure (HTTP 5xx).
 	ErrServerError = errors.New("github api server error")
+	// ErrNetworkTimeout indicates a transport-level timeout (e.g. context deadline or TCP read timeout).
+	ErrNetworkTimeout = errors.New("github api network timeout: check connectivity or increase timeout")
+	// ErrUnprocessableEntity indicates GitHub accepted the request but the payload was invalid (HTTP 422).
+	ErrUnprocessableEntity = errors.New("github api rejected the request: invalid payload")
+)
+
+const (
+	// defaultRequestTimeout is the per-request budget for a GitHub API call.
+	defaultRequestTimeout = 30 * time.Second
 )
 
 // WebhookConfig represents the configuration payload for a GitHub webhook.
@@ -59,7 +70,7 @@ type HTTPGitHubClient struct {
 // NewHTTPGitHubClient creates a new HTTP-based GitHub API client.
 func NewHTTPGitHubClient(baseURL, token string, httpClient *http.Client) *HTTPGitHubClient {
 	if httpClient == nil {
-		httpClient = http.DefaultClient
+		httpClient = &http.Client{Timeout: defaultRequestTimeout}
 	}
 	baseURL = strings.TrimRight(baseURL, "/")
 	return &HTTPGitHubClient{
@@ -110,6 +121,10 @@ func (c *HTTPGitHubClient) checkResponseError(resp *http.Response) error {
 		return fmt.Errorf("%w: status %d body: %s", ErrForbidden, resp.StatusCode, string(body))
 	case http.StatusTooManyRequests:
 		return fmt.Errorf("%w: status %d body: %s", ErrRateLimited, resp.StatusCode, string(body))
+	case http.StatusRequestTimeout:
+		return fmt.Errorf("%w: status %d body: %s", ErrNetworkTimeout, resp.StatusCode, string(body))
+	case http.StatusUnprocessableEntity:
+		return fmt.Errorf("%w: status %d body: %s", ErrUnprocessableEntity, resp.StatusCode, string(body))
 	case http.StatusInternalServerError, http.StatusBadGateway, http.StatusServiceUnavailable, http.StatusGatewayTimeout:
 		return fmt.Errorf("%w: status %d body: %s", ErrServerError, resp.StatusCode, string(body))
 	default:
@@ -117,17 +132,35 @@ func (c *HTTPGitHubClient) checkResponseError(resp *http.Response) error {
 	}
 }
 
-// GetWebhook retrieves a specific webhook by ID.
-func (c *HTTPGitHubClient) GetWebhook(ctx context.Context, owner, repo string, hookID int64) (*Webhook, error) {
-	path := fmt.Sprintf("/repos/%s/%s/hooks/%d", owner, repo, hookID)
-	req, err := c.newRequest(ctx, http.MethodGet, path, nil)
+func (c *HTTPGitHubClient) doRequest(ctx context.Context, method, path string, body interface{}, resource string) (*http.Response, error) {
+	req, err := c.newRequest(ctx, method, path, body)
 	if err != nil {
 		return nil, err
 	}
-
 	resp, err := c.HTTPClient.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("network error querying github webhook: %w", err)
+		// Classify transport-level errors so callers can distinguish a timeout
+		// from a generic connection failure. Aborting reconciliation is still the
+		// correct behavior (no CreateWebhook attempt) in either case.
+		if errors.Is(err, context.DeadlineExceeded) || isTimeoutErr(err) {
+			return nil, fmt.Errorf("%w: %v", ErrNetworkTimeout, err)
+		}
+		return nil, fmt.Errorf("network error calling github %s: %w", resource, err)
+	}
+	return resp, nil
+}
+
+func isTimeoutErr(err error) bool {
+	var nerr net.Error
+	return errors.As(err, &nerr) && nerr.Timeout()
+}
+
+// GetWebhook retrieves a specific webhook by ID.
+func (c *HTTPGitHubClient) GetWebhook(ctx context.Context, owner, repo string, hookID int64) (*Webhook, error) {
+	path := fmt.Sprintf("/repos/%s/%s/hooks/%d", owner, repo, hookID)
+	resp, err := c.doRequest(ctx, http.MethodGet, path, nil, "webhook")
+	if err != nil {
+		return nil, err
 	}
 	defer resp.Body.Close()
 
@@ -145,14 +178,9 @@ func (c *HTTPGitHubClient) GetWebhook(ctx context.Context, owner, repo string, h
 // ListWebhooks retrieves all webhooks for a repository.
 func (c *HTTPGitHubClient) ListWebhooks(ctx context.Context, owner, repo string) ([]*Webhook, error) {
 	path := fmt.Sprintf("/repos/%s/%s/hooks", owner, repo)
-	req, err := c.newRequest(ctx, http.MethodGet, path, nil)
+	resp, err := c.doRequest(ctx, http.MethodGet, path, nil, "webhooks")
 	if err != nil {
 		return nil, err
-	}
-
-	resp, err := c.HTTPClient.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("network error listing github webhooks: %w", err)
 	}
 	defer resp.Body.Close()
 
@@ -170,14 +198,9 @@ func (c *HTTPGitHubClient) ListWebhooks(ctx context.Context, owner, repo string)
 // CreateWebhook creates a new webhook for a repository.
 func (c *HTTPGitHubClient) CreateWebhook(ctx context.Context, owner, repo string, hook *Webhook) (*Webhook, error) {
 	path := fmt.Sprintf("/repos/%s/%s/hooks", owner, repo)
-	req, err := c.newRequest(ctx, http.MethodPost, path, hook)
+	resp, err := c.doRequest(ctx, http.MethodPost, path, hook, "create_webhook")
 	if err != nil {
 		return nil, err
-	}
-
-	resp, err := c.HTTPClient.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("network error creating github webhook: %w", err)
 	}
 	defer resp.Body.Close()
 
@@ -211,8 +234,9 @@ func NewReconciler(client GitHubClient, logger *log.Logger) *Reconciler {
 
 // Reconcile ensures the desired webhook exists on the target repository.
 // If the webhook retrieval indicates 404 (ErrWebhookNotFound), it creates the webhook.
-// Non-404 errors (5xx, 429, 401, 403, network timeouts) are propagated immediately
-// without attempting creation to prevent duplicate webhooks and masking critical errors.
+// Non-404 errors (5xx, 429, 401, 403, 408 timeouts, 422 validation, network timeouts) are
+// propagated immediately without attempting creation to prevent duplicate webhooks
+// and masking critical errors.
 func (r *Reconciler) Reconcile(ctx context.Context, owner, repo string, desired *Webhook) (*Webhook, error) {
 	hooks, err := r.client.ListWebhooks(ctx, owner, repo)
 	if err != nil {
@@ -234,6 +258,16 @@ func (r *Reconciler) Reconcile(ctx context.Context, owner, repo string, desired 
 		if errors.Is(err, ErrServerError) {
 			r.logger.Printf("GitHub server error encountered while reconciling %s/%s: %v", owner, repo, err)
 			return nil, fmt.Errorf("github server error reconciling webhook for %s/%s: %w", owner, repo, err)
+		}
+
+		if errors.Is(err, ErrNetworkTimeout) {
+			r.logger.Printf("Network timeout reconciling %s/%s: %v", owner, repo, err)
+			return nil, fmt.Errorf("network timeout reconciling webhook for %s/%s: %w", owner, repo, err)
+		}
+
+		if errors.Is(err, ErrUnprocessableEntity) {
+			r.logger.Printf("Unprocessable entity from GitHub for %s/%s: %v", owner, repo, err)
+			return nil, fmt.Errorf("github rejected the webhook payload for %s/%s: %w", owner, repo, err)
 		}
 
 		r.logger.Printf("Error fetching webhooks for %s/%s: %v", owner, repo, err)

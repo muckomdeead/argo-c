@@ -262,3 +262,116 @@ func TestReconciler_ExistingWebhook_Idempotent(t *testing.T) {
 		t.Fatalf("CreateWebhook should NOT be called when webhook already exists")
 	}
 }
+
+
+func TestReconciler_NetworkTimeout_HaltsWithoutCreation(t *testing.T) {
+	var createCalled int32
+
+	// Create a client with a context-based timeout that triggers before
+	// the test server can respond. This simulates a transport-level timeout
+	// (ErrNetworkTimeout) that must halt reconciliation.
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet {
+			time.Sleep(200 * time.Millisecond)
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+		if r.Method == http.MethodPost {
+			atomic.AddInt32(&createCalled, 1)
+			w.WriteHeader(http.StatusCreated)
+			return
+		}
+	}))
+	defer server.Close()
+
+	client := NewHTTPGitHubClient(server.URL, "test-token", &http.Client{Timeout: 10 * time.Millisecond})
+	reconciler := NewReconciler(client, nil)
+
+	desired := &Webhook{
+		Active: true,
+		Config: WebhookConfig{URL: "https://example.com/hook"},
+	}
+
+	_, err := reconciler.Reconcile(context.Background(), "owner", "repo", desired)
+	if err == nil {
+		t.Fatalf("expected network timeout error, got nil")
+	}
+	if !errors.Is(err, ErrNetworkTimeout) {
+		t.Fatalf("expected ErrNetworkTimeout, got: %v", err)
+	}
+	if atomic.LoadInt32(&createCalled) != 0 {
+		t.Fatalf("CreateWebhook should NOT be called on network timeout")
+	}
+}
+
+func TestReconciler_RequestTimeout_HaltsWithoutCreation(t *testing.T) {
+	var createCalled int32
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet {
+			w.WriteHeader(http.StatusRequestTimeout)
+			return
+		}
+		if r.Method == http.MethodPost {
+			atomic.AddInt32(&createCalled, 1)
+			w.WriteHeader(http.StatusCreated)
+			return
+		}
+	}))
+	defer server.Close()
+
+	client := NewHTTPGitHubClient(server.URL, "test-token", server.Client())
+	reconciler := NewReconciler(client, nil)
+
+	desired := &Webhook{
+		Active: true,
+		Config: WebhookConfig{URL: "https://example.com/hook"},
+	}
+
+	_, err := reconciler.Reconcile(context.Background(), "owner", "repo", desired)
+	if err == nil {
+		t.Fatalf("expected timeout error, got nil")
+	}
+	if !errors.Is(err, ErrNetworkTimeout) {
+		t.Fatalf("expected ErrNetworkTimeout, got: %v", err)
+	}
+	if atomic.LoadInt32(&createCalled) != 0 {
+		t.Fatalf("CreateWebhook should NOT be called on HTTP 408")
+	}
+}
+
+func TestReconciler_UnprocessableEntity_HaltsWithoutCreation(t *testing.T) {
+	var createCalled int32
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet {
+			w.WriteHeader(http.StatusUnprocessableEntity)
+			return
+		}
+		if r.Method == http.MethodPost {
+			atomic.AddInt32(&createCalled, 1)
+			w.WriteHeader(http.StatusCreated)
+			return
+		}
+	}))
+	defer server.Close()
+
+	client := NewHTTPGitHubClient(server.URL, "test-token", server.Client())
+	reconciler := NewReconciler(client, nil)
+
+	desired := &Webhook{
+		Active: true,
+		Config: WebhookConfig{URL: "https://example.com/hook"},
+	}
+
+	_, err := reconciler.Reconcile(context.Background(), "owner", "repo", desired)
+	if err == nil {
+		t.Fatalf("expected 422 error, got nil")
+	}
+	if !errors.Is(err, ErrUnprocessableEntity) {
+		t.Fatalf("expected ErrUnprocessableEntity, got: %v", err)
+	}
+	if atomic.LoadInt32(&createCalled) != 0 {
+		t.Fatalf("CreateWebhook should NOT be called on HTTP 422")
+	}
+}
