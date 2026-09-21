@@ -142,29 +142,58 @@ func (c *HTTPGitHubClient) GetWebhook(ctx context.Context, owner, repo string, h
 	return &hook, nil
 }
 
-// ListWebhooks retrieves all webhooks for a repository.
+// ListWebhooks retrieves all webhooks for a repository across all result pages.
+// GitHub paginates webhook lists at 30 per page; this function follows Link headers
+// to accumulate every page before returning.
 func (c *HTTPGitHubClient) ListWebhooks(ctx context.Context, owner, repo string) ([]*Webhook, error) {
-	path := fmt.Sprintf("/repos/%s/%s/hooks", owner, repo)
-	req, err := c.newRequest(ctx, http.MethodGet, path, nil)
-	if err != nil {
-		return nil, err
+	var allHooks []*Webhook
+	nextURL := fmt.Sprintf("%s/repos/%s/%s/hooks", c.BaseURL, owner, repo)
+
+	for nextURL != "" {
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, nextURL, nil)
+		if err != nil {
+			return nil, fmt.Errorf("failed to build request for %s: %w", nextURL, err)
+		}
+		if c.Token != "" {
+			req.Header.Set("Authorization", "Bearer "+c.Token)
+		}
+		req.Header.Set("Accept", "application/vnd.github.v3+json")
+
+		resp, err := c.HTTPClient.Do(req)
+		if err != nil {
+			return nil, fmt.Errorf("network error listing github webhooks at %s: %w", nextURL, err)
+		}
+		if err := c.checkResponseError(resp); err != nil {
+			resp.Body.Close()
+			return nil, err
+		}
+
+		var hooks []*Webhook
+		if err := json.NewDecoder(resp.Body).Decode(&hooks); err != nil {
+			resp.Body.Close()
+			return nil, fmt.Errorf("failed to decode webhooks response from %s: %w", nextURL, err)
+		}
+		resp.Body.Close()
+		allHooks = append(allHooks, hooks...)
+
+		// Follow pagination Link header (e.g. <url>; rel="next")
+		nextURL = ""
+		for _, link := range resp.Header["Link"] {
+			parts := strings.Split(link, ",")
+			for _, part := range parts {
+				part = strings.TrimSpace(part)
+				if strings.HasSuffix(part, `; rel="next"`) {
+					start := strings.Index(part, "<")
+					end := strings.Index(part, ">")
+					if start >= 0 && end > start {
+						nextURL = part[start+1 : end]
+					}
+				}
+			}
+		}
 	}
 
-	resp, err := c.HTTPClient.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("network error listing github webhooks: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if err := c.checkResponseError(resp); err != nil {
-		return nil, err
-	}
-
-	var hooks []*Webhook
-	if err := json.NewDecoder(resp.Body).Decode(&hooks); err != nil {
-		return nil, fmt.Errorf("failed to decode webhooks response: %w", err)
-	}
-	return hooks, nil
+	return allHooks, nil
 }
 
 // CreateWebhook creates a new webhook for a repository.
