@@ -1,0 +1,16 @@
+diff --git a/webhook_reconciliation.go b/webhook_reconciliation.go
+index 1234567..89abcde 100644
+--- a/webhook_reconciliation.go
++++ b/webhook_reconciliation.go
+@@ -120,7 +120,10 @@ func (r *Reconciler) reconcileWebhooks(repo string) error {
+         return err
+     }
+ 
+-    if response.StatusCode == http.StatusNotFound {
++    if response.StatusCode == http.StatusNotFound {
++        return nil // Do not proceed if it's a 404
++    } else if response.StatusCode >= 400 && response.StatusCode < 500 {
++        return fmt.Errorf("non-404 API error: %s", response.Status)
+     }
+ 
+     // Proceed with webhook reconciliation logic
