@@ -1,0 +1,14 @@
+diff --git a/webhook_reconciliation.go b/webhook_reconciliation.go
+--- a/webhook_reconciliation.go
++++ b/webhook_reconciliation.go
+@@ -20,6 +20,10 @@ func checkWebhookExistence(token string, repoName string) (bool, error) {
+     resp, err := httpClient.Get(apiEndpoint)
+     if err != nil {
+         return false, err
++    }
++    if resp.StatusCode != http.StatusNotFound {
++        return false, fmt.Errorf("non-404 API failure: %s", resp.Status)
++    }
+     defer resp.Body.Close()
+ 
+     var webhookExists bool
