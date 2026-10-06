@@ -1,0 +1,14 @@
+diff --git a/webhook_reconciliation.go b/webhook_reconciliation.go
+index 1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef0
+--- a/webhook_reconciliation.go
++++ b/webhook_reconciliation.go
+@@ -50,6 +50,8 @@ func checkWebhookExistence(repoName string, client *github.Client) (bool, error
+         return false, err
+     }
+ 
++    if resp.StatusCode != http.StatusNotFound {
++        return false, fmt.Errorf("API error: %v", resp.Status)
++    }
+     // Proceed with creating the webhook
+     return true, nil
+ }
