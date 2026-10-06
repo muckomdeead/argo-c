@@ -1,0 +1,19 @@
+diff --git a/github-webhook-reconciliation.go b/github-webhook-reconciliation.go
+--- a/github-webhook-reconciliation.go
++++ b/github-webhook-reconciliation.go
+@@ -120,6 +120,14 @@ func (r *Reconciler) reconcileWebhook(ctx context.Context, repo string) error {
+         return nil
+     }
+ 
++    // Explicitly handle non-404 errors
++    if status := resp.StatusCode; status != http.StatusNotFound {
++        // Log the error and return it as a non-recoverable error
++        r.logger.Errorf("GitHub API returned unexpected status: %d", status)
++        return errors.New(fmt.Sprintf("GitHub API returned unexpected status: %d", status))
++    }
++
++    // Proceed with webhook creation only if the webhook is truly missing
++
+     // Proceed with webhook creation if the webhook is missing
+     // ...
+ }
