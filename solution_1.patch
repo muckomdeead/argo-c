@@ -1,0 +1,27 @@
+diff --git a/webhook_reconciliation.go b/webhook_reconciliation.go
+--- a/webhook_reconciliation.go
++++ b/webhook_reconciliation.go
+@@ -20,6 +20,7 @@ import (
+ 	"net/http"
+ 	"time"
+ 
++	"github.com/go-resty/resty/v2"
+ 	"github.com/sirupsen/logrus"
+ )
+ 
+@@ -60,7 +61,12 @@ func (r *Reconciliation) checkWebhookExistence(repo string) (bool, error) {
+ 		return false, nil
+ 	}
+ 
+-	if resp.StatusCode != http.StatusNotFound {
++	client := resty.New().SetRetryCount(3).SetRetryWait(time.Second*2)
++	resp, err := client.R().
++		SetResult(&Webhook{}).
++		SetError(&webhookError{}).
++		Get(fmt.Sprintf("https://api.github.com/repos/%s/hooks/%s", r.owner, hookID))
++
++	if err != nil {
++		return false, fmt.Errorf("failed to query webhook: %v", err)
+ 	}
+ 
+ 	return resp.IsStatusSuccess(), nil
