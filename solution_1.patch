@@ -1,0 +1,25 @@
+diff --git a/reconciliation.go b/reconciliation.go
+--- a/reconciliation.go
++++ b/reconciliation.go
+@@ -50,6 +50,12 @@ func reconcileWebhooks(repoName string, orgName string) error {
+         return nil
+     }
+ 
++    if resp.StatusCode == http.StatusNotModified {
++        // Handle 304 Not Modified, which means the webhook is up to date
++        return nil
++    }
++
++
+     // Check for 404 Not Found
+     if resp.StatusCode == http.StatusNotFound {
+         // Webhook is missing, proceed with creation
+@@ -60,7 +66,7 @@ func reconcileWebhooks(repoName string, orgName string) error {
+     } else {
+         // Handle other HTTP errors
+         // Check for rate limit, server errors, authentication/authorization issues
+-        if resp.StatusCode >= 400 && resp.StatusCode < 500 {
++        if resp.StatusCode >= 400 && resp.StatusCode < 404 || resp.StatusCode >= 500 {
+             // Handle client errors or server errors
+             return fmt.Errorf("API returned error: %s", resp.Status)
+         }
