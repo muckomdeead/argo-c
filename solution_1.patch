@@ -1,0 +1,15 @@
+diff --git a/webhook_reconciliation.go b/webhook_reconciliation.go
+--- a/webhook_reconciliation.go
++++ b/webhook_reconciliation.go
+@@ -50,7 +50,10 @@ func checkWebhookExistence(client *github.Client, repoOwner, repoName string) (
+         return true, nil
+     }
+ 
+-    if resp.StatusCode == http.StatusNotFound {
++    if resp.StatusCode == http.StatusNotFound {
++        return true, nil
++    } else if resp.StatusCode >= 400 && resp.StatusCode < 500 || resp.StatusCode >= 500 {
++        return false, fmt.Errorf("non-404 error encountered: %s", resp.Status)
+     }
+ 
+     return false, nil
